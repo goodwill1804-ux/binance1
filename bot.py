@@ -15,7 +15,6 @@ exchange = ccxt.binanceusdm({
 })
 
 SYMBOLS = ['BTC/USDT', 'XAU/USDT', 'XAG/USDT']
-# Timeframes are now handled dynamically by the clock
 
 # Set Timezone to India
 IST = pytz.timezone('Asia/Kolkata')
@@ -69,48 +68,55 @@ def check_crossover(symbol, timeframe):
         print(f"Error checking {symbol} on {timeframe}: {e}")
 
 def main():
-    print("Starting Precision Clock Scanner (IST Timezone)...")
-    print("Bot will scan exactly 5 seconds after candles close.")
+    print("Starting Ultra-Precision Scanner (IST Timezone)...")
+    print("Bot will calculate exact sleep times to fire 5 seconds after candle close.")
     
     while True:
-        # Get current absolute time
-        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        now = datetime.datetime.now(datetime.timezone.utc)
         
-        # Check if we are exactly at the 5th second of the minute
-        if now_utc.second == 5:
-            scan_timeframes = []
+        # 1. Calculate the exact time the NEXT 5-minute candle closes
+        current_minute_floor = now.replace(second=0, microsecond=0)
+        minutes_to_next = 5 - (now.minute % 5)
+        next_candle_close = current_minute_floor + datetime.timedelta(minutes=minutes_to_next)
+        
+        # 2. Add our 5-second delay buffer
+        target_scan_time = next_candle_close + datetime.timedelta(seconds=5)
+        
+        # 3. Calculate exactly how many seconds to sleep to hit that target
+        sleep_seconds = (target_scan_time - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
+        
+        target_ist = target_scan_time.astimezone(IST)
+        print(f"\nNext scan scheduled for: {target_ist.strftime('%I:%M:%S %p')} IST")
+        print(f"Server sleeping for {sleep_seconds:.1f} seconds...")
+        
+        # Put the server to sleep until the exact target time
+        time.sleep(sleep_seconds)
+        
+        # --- SERVER WAKES UP EXACTLY 5 SECONDS AFTER CANDLES CLOSE ---
+        
+        wake_time_utc = datetime.datetime.now(datetime.timezone.utc)
+        wake_time_ist = wake_time_utc.astimezone(IST)
+        
+        # Determine which candle just closed (subtracting the 5 second buffer)
+        candle_minute = (wake_time_utc - datetime.timedelta(seconds=5)).minute
+        
+        # The 5m chart is ALWAYS scanned every time the bot wakes up
+        scan_timeframes = ['5m'] 
+        
+        # Check if the candle that just closed aligns with higher timeframes
+        if candle_minute % 15 == 0:
+            scan_timeframes.append('15m')
+        if candle_minute % 30 == 0:
+            scan_timeframes.append('30m')
+        if candle_minute == 0:
+            scan_timeframes.append('1h')
             
-            # 5-minute candles close when minute is 0, 5, 10, 15, etc.
-            if now_utc.minute % 5 == 0:
-                scan_timeframes.append('5m')
-            
-            # 15-minute candles close when minute is 0, 15, 30, 45
-            if now_utc.minute % 15 == 0:
-                scan_timeframes.append('15m')
-                
-            # 30-minute candles close when minute is 0, 30
-            if now_utc.minute % 30 == 0:
-                scan_timeframes.append('30m')
-                
-            # 1-hour candles close at the top of the UTC hour (which is XX:30 IST)
-            if now_utc.minute == 0:
-                scan_timeframes.append('1h')
-            
-            # If any candles just closed, run the scans
-            if scan_timeframes:
-                now_ist = now_utc.astimezone(IST)
-                print(f"\n--- [IST: {now_ist.strftime('%I:%M:%S %p')}] Scanning: {scan_timeframes} ---")
-                
-                for symbol in SYMBOLS:
-                    for tf in scan_timeframes:
-                        check_crossover(symbol, tf)
-                        time.sleep(1) # Respect API limits
-                        
-            # Sleep for 50 seconds so we don't accidentally run again in the same minute
-            time.sleep(50)
-            
-        # Sleep briefly (0.5s) to accurately catch the exact 5th second without burning CPU
-        time.sleep(0.5)
+        print(f"--- [IST: {wake_time_ist.strftime('%I:%M:%S %p')}] Scanning: {scan_timeframes} ---")
+        
+        for symbol in SYMBOLS:
+            for tf in scan_timeframes:
+                check_crossover(symbol, tf)
+                time.sleep(1) # Respect Binance rate limits
 
 if __name__ == '__main__':
     main()
