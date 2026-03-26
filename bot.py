@@ -3,24 +3,26 @@ import pandas as pd
 import time
 import requests
 import os
+import datetime
+import pytz
 
 # --- CONFIGURATION ---
-# Pulling sensitive data from Render Environment Variables
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
-# Initialize Binance USDT-Margined Futures
 exchange = ccxt.binanceusdm({
     'enableRateLimit': True,
 })
 
 SYMBOLS = ['BTC/USDT', 'XAU/USDT', 'XAG/USDT']
-TIMEFRAMES = ['5m', '15m', '30m', '1h']
+# Timeframes are now handled dynamically by the clock
+
+# Set Timezone to India
+IST = pytz.timezone('Asia/Kolkata')
 
 def send_telegram_alert(message):
-    """Sends a formatted message to your Telegram chat."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Telegram credentials missing. Print to console only:\n", message)
+        print("Telegram credentials missing:\n", message)
         return
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -33,40 +35,33 @@ def send_telegram_alert(message):
         print(f"Failed to send Telegram message: {e}")
 
 def check_crossover(symbol, timeframe):
-    """Fetches data and calculates the 50/200 SMA crossover."""
     try:
-        # Fetch 210 candles to ensure we have enough data for a 200 SMA
         bars = exchange.fetch_ohlcv(symbol, timeframe, limit=210)
         
         if len(bars) < 200:
-            print(f"Not enough data for {symbol} on {timeframe}")
             return
 
         df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         
-        # Calculate Simple Moving Averages
         df['sma_50'] = df['close'].rolling(window=50).mean()
         df['sma_200'] = df['close'].rolling(window=200).mean()
         
-        # Avoid repainting: 
-        # index [-1] is the current open/forming candle
-        # index [-2] is the last fully closed candle
-        # index [-3] is the candle before the last closed one
         prev_50 = df['sma_50'].iloc[-3]
         prev_200 = df['sma_200'].iloc[-3]
-        
         curr_50 = df['sma_50'].iloc[-2]
         curr_200 = df['sma_200'].iloc[-2]
         
-        # Golden Cross: 50 was below 200, now it is above
+        # Get current IST time for the alert message
+        now_ist = datetime.datetime.now(datetime.timezone.utc).astimezone(IST)
+        time_str = now_ist.strftime('%I:%M %p')
+        
         if prev_50 <= prev_200 and curr_50 > curr_200:
-            msg = f"🟢 <b>GOLDEN CROSS</b>\n<b>Asset:</b> {symbol}\n<b>Timeframe:</b> {timeframe}\n50 SMA crossed above 200 SMA."
+            msg = f"🟢 <b>GOLDEN CROSS</b>\n<b>Asset:</b> {symbol}\n<b>Timeframe:</b> {timeframe}\n<b>Time:</b> {time_str} (IST)\n50 SMA crossed above 200 SMA."
             print(msg)
             send_telegram_alert(msg)
             
-        # Death Cross: 50 was above 200, now it is below
         elif prev_50 >= prev_200 and curr_50 < curr_200:
-            msg = f"🔴 <b>DEATH CROSS</b>\n<b>Asset:</b> {symbol}\n<b>Timeframe:</b> {timeframe}\n50 SMA crossed below 200 SMA."
+            msg = f"🔴 <b>DEATH CROSS</b>\n<b>Asset:</b> {symbol}\n<b>Timeframe:</b> {timeframe}\n<b>Time:</b> {time_str} (IST)\n50 SMA crossed below 200 SMA."
             print(msg)
             send_telegram_alert(msg)
             
@@ -74,20 +69,48 @@ def check_crossover(symbol, timeframe):
         print(f"Error checking {symbol} on {timeframe}: {e}")
 
 def main():
-    print("Starting Market Scanner...")
+    print("Starting Precision Clock Scanner (IST Timezone)...")
+    print("Bot will scan exactly 5 seconds after candles close.")
     
     while True:
-        print(f"\n--- Scanning at {pd.Timestamp.utcnow()} ---")
-        for symbol in SYMBOLS:
-            for tf in TIMEFRAMES:
-                check_crossover(symbol, tf)
-                # Small sleep to respect Binance API rate limits
-                time.sleep(1) 
+        # Get current absolute time
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
         
-        print("Scan complete. Sleeping for 5 minutes...")
-        # Sleep for 5 minutes (300 seconds) before checking again
-        # Since the lowest timeframe is 5m, we don't need to scan faster than this
-        time.sleep(300) 
+        # Check if we are exactly at the 5th second of the minute
+        if now_utc.second == 5:
+            scan_timeframes = []
+            
+            # 5-minute candles close when minute is 0, 5, 10, 15, etc.
+            if now_utc.minute % 5 == 0:
+                scan_timeframes.append('5m')
+            
+            # 15-minute candles close when minute is 0, 15, 30, 45
+            if now_utc.minute % 15 == 0:
+                scan_timeframes.append('15m')
+                
+            # 30-minute candles close when minute is 0, 30
+            if now_utc.minute % 30 == 0:
+                scan_timeframes.append('30m')
+                
+            # 1-hour candles close at the top of the UTC hour (which is XX:30 IST)
+            if now_utc.minute == 0:
+                scan_timeframes.append('1h')
+            
+            # If any candles just closed, run the scans
+            if scan_timeframes:
+                now_ist = now_utc.astimezone(IST)
+                print(f"\n--- [IST: {now_ist.strftime('%I:%M:%S %p')}] Scanning: {scan_timeframes} ---")
+                
+                for symbol in SYMBOLS:
+                    for tf in scan_timeframes:
+                        check_crossover(symbol, tf)
+                        time.sleep(1) # Respect API limits
+                        
+            # Sleep for 50 seconds so we don't accidentally run again in the same minute
+            time.sleep(50)
+            
+        # Sleep briefly (0.5s) to accurately catch the exact 5th second without burning CPU
+        time.sleep(0.5)
 
 if __name__ == '__main__':
     main()
