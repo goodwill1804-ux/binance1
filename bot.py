@@ -45,10 +45,28 @@ def check_crossover(symbol, timeframe):
         df['sma_50'] = df['close'].rolling(window=50).mean()
         df['sma_200'] = df['close'].rolling(window=200).mean()
         
-        prev_50 = df['sma_50'].iloc[-3]
-        prev_200 = df['sma_200'].iloc[-3]
-        curr_50 = df['sma_50'].iloc[-2]
-        curr_200 = df['sma_200'].iloc[-2]
+        # --- LEAD ENGINEER FIX: DYNAMIC INDEXING ---
+        # Convert timeframe to milliseconds (e.g., 5m = 300,000 ms)
+        tf_ms = exchange.parse_timeframe(timeframe) * 1000
+        current_time_ms = int(time.time() * 1000)
+        
+        # Get the timestamp of the very last bar Binance gave us
+        last_candle_timestamp = df['timestamp'].iloc[-1]
+        
+        # Determine if Binance has pushed the new forming candle yet
+        if current_time_ms >= (last_candle_timestamp + tf_ms):
+            # API is lagging: The last bar in the dataframe IS the fully closed candle
+            curr_idx = -1
+            prev_idx = -2
+        else:
+            # API is fast: The last bar is currently forming, so drop back one index
+            curr_idx = -2
+            prev_idx = -3
+            
+        prev_50 = df['sma_50'].iloc[prev_idx]
+        prev_200 = df['sma_200'].iloc[prev_idx]
+        curr_50 = df['sma_50'].iloc[curr_idx]
+        curr_200 = df['sma_200'].iloc[curr_idx]
         
         # Get current IST time for the alert message
         now_ist = datetime.datetime.now(datetime.timezone.utc).astimezone(IST)
@@ -68,7 +86,7 @@ def check_crossover(symbol, timeframe):
         print(f"Error checking {symbol} on {timeframe}: {e}")
 
 def main():
-    print("Starting Ultra-Precision Scanner (IST Timezone)...")
+    print("Starting Ultra-Precision Scanner (Dynamic Indexing Built-In)...")
     print("Bot will calculate exact sleep times to fire 5 seconds after candle close.")
     
     while True:
@@ -79,38 +97,31 @@ def main():
         minutes_to_next = 5 - (now.minute % 5)
         next_candle_close = current_minute_floor + datetime.timedelta(minutes=minutes_to_next)
         
+        # --- FIX: Define target timeframes BEFORE sleeping to prevent drift bugs ---
+        scan_timeframes = ['5m'] 
+        if next_candle_close.minute % 15 == 0:
+            scan_timeframes.append('15m')
+        if next_candle_close.minute % 30 == 0:
+            scan_timeframes.append('30m')
+        if next_candle_close.minute == 0:
+            scan_timeframes.append('1h')
+            
         # 2. Add our 5-second delay buffer
         target_scan_time = next_candle_close + datetime.timedelta(seconds=5)
         
         # 3. Calculate exactly how many seconds to sleep to hit that target
         sleep_seconds = (target_scan_time - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
         
-        target_ist = target_scan_time.astimezone(IST)
-        print(f"\nNext scan scheduled for: {target_ist.strftime('%I:%M:%S %p')} IST")
-        print(f"Server sleeping for {sleep_seconds:.1f} seconds...")
-        
-        # Put the server to sleep until the exact target time
-        time.sleep(sleep_seconds)
+        if sleep_seconds > 0:
+            target_ist = target_scan_time.astimezone(IST)
+            print(f"\nNext scan scheduled for: {target_ist.strftime('%I:%M:%S %p')} IST")
+            print(f"Server sleeping for {sleep_seconds:.1f} seconds...")
+            # Put the server to sleep until the exact target time
+            time.sleep(sleep_seconds)
         
         # --- SERVER WAKES UP EXACTLY 5 SECONDS AFTER CANDLES CLOSE ---
         
-        wake_time_utc = datetime.datetime.now(datetime.timezone.utc)
-        wake_time_ist = wake_time_utc.astimezone(IST)
-        
-        # Determine which candle just closed (subtracting the 5 second buffer)
-        candle_minute = (wake_time_utc - datetime.timedelta(seconds=5)).minute
-        
-        # The 5m chart is ALWAYS scanned every time the bot wakes up
-        scan_timeframes = ['5m'] 
-        
-        # Check if the candle that just closed aligns with higher timeframes
-        if candle_minute % 15 == 0:
-            scan_timeframes.append('15m')
-        if candle_minute % 30 == 0:
-            scan_timeframes.append('30m')
-        if candle_minute == 0:
-            scan_timeframes.append('1h')
-            
+        wake_time_ist = datetime.datetime.now(datetime.timezone.utc).astimezone(IST)
         print(f"--- [IST: {wake_time_ist.strftime('%I:%M:%S %p')}] Scanning: {scan_timeframes} ---")
         
         for symbol in SYMBOLS:
