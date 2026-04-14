@@ -14,7 +14,7 @@ exchange = ccxt.binanceusdm({
     'enableRateLimit': True,
 })
 
-SYMBOLS = ['BTC/USDT', 'XAU/USDT', 'XAG/USDT']
+SYMBOLS = ['BTC/USDT', 'XAU/USDT', 'XAG/USDT','CLUSDT']
 
 # Set Timezone to India
 IST = pytz.timezone('Asia/Kolkata')
