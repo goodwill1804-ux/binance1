@@ -14,7 +14,7 @@ exchange = ccxt.binanceusdm({
     'enableRateLimit': True,
 })
 
-SYMBOLS = ['BTC/USDT', 'XAU/USDT', 'XAG/USDT','CLUSDT']
+SYMBOLS = ['BTC/USDT', 'XAU/USDT', 'XAG/USDT']
 
 # Set Timezone to India
 IST = pytz.timezone('Asia/Kolkata')
@@ -69,7 +69,7 @@ def check_crossover(symbol, timeframe):
         time_str = now_ist.strftime('%I:%M %p')
         
         # ==========================================
-        # 1. CHECK FOR STANDARD CROSSOVER
+        # STRATEGY 1: STANDARD CROSSOVER ALERTS
         # ==========================================
         if prev_50 <= prev_200 and curr_50 > curr_200:
             msg = f"🟢 <b>GOLDEN CROSS</b>\n<b>Asset:</b> {symbol}\n<b>Timeframe:</b> {timeframe}\n<b>Time:</b> {time_str} (IST)\n50 SMA crossed above 200 SMA."
@@ -83,7 +83,7 @@ def check_crossover(symbol, timeframe):
 
 
         # ==========================================
-        # 2. THE PULLBACK ENGINE
+        # STRATEGY 2: 50 SMA PULLBACK ALERTS
         # ==========================================
         last_cross_type = None
         last_cross_idx = None
@@ -105,39 +105,42 @@ def check_crossover(symbol, timeframe):
                 break
 
         if last_cross_type is not None:
-            # Step B: Check if price has already touched 200 SMA since the crossover
-            touched_before = False
-            for i in range(last_cross_idx + 1, curr_pos_idx):
-                low = df['low'].iloc[i]
-                high = df['high'].iloc[i]
-                sma_200 = df['sma_200'].iloc[i]
-                
-                # A touch means the 200 SMA is between the high and low of the candle
-                if low <= sma_200 and high >= sma_200:
-                    touched_before = True
-                    break
+            # Step B: Check if the 50 SMA pullback condition has ALREADY happened since the crossover
+            pullback_happened_before = False
             
-            # Step C: If it hasn't touched before, check the CURRENT closed candle
-            if not touched_before:
-                curr_low = df['low'].iloc[curr_pos_idx]
-                curr_high = df['high'].iloc[curr_pos_idx]
+            for i in range(last_cross_idx + 1, curr_pos_idx):
+                i_open = df['open'].iloc[i]
+                i_close = df['close'].iloc[i]
+                i_sma_50 = df['sma_50'].iloc[i]
+                
+                if last_cross_type == 'golden':
+                    # Check for previous red candle below 50 SMA
+                    if i_close < i_sma_50 and i_close < i_open:
+                        pullback_happened_before = True
+                        break
+                elif last_cross_type == 'death':
+                    # Check for previous green candle above 50 SMA
+                    if i_close > i_sma_50 and i_close > i_open:
+                        pullback_happened_before = True
+                        break
+            
+            # Step C: If it hasn't happened before, check the CURRENT closed candle
+            if not pullback_happened_before:
                 curr_open = df['open'].iloc[curr_pos_idx]
                 curr_close = df['close'].iloc[curr_pos_idx]
-                curr_sma200 = df['sma_200'].iloc[curr_pos_idx]
+                curr_sma50 = df['sma_50'].iloc[curr_pos_idx]
 
-                # Check if current candle touches 200 SMA
-                touches_now = (curr_low <= curr_sma200) and (curr_high >= curr_sma200)
-
-                if touches_now:
-                    # Bullish Pullback: Golden trend + Green Candle (Close > Open)
-                    if last_cross_type == 'golden' and curr_close > curr_open:
-                        msg = f"🔄 <b>1ST PULLBACK (BULLISH)</b>\n<b>Asset:</b> {symbol}\n<b>Timeframe:</b> {timeframe}\n<b>Time:</b> {time_str} (IST)\nPrice touched 200 SMA and formed a green candle after Golden Cross."
+                if last_cross_type == 'golden':
+                    # Current candle is red and closed below 50 SMA
+                    if curr_close < curr_sma50 and curr_close < curr_open:
+                        msg = f"📉 <b>1ST PULLBACK (BELOW 50 SMA)</b>\n<b>Asset:</b> {symbol}\n<b>Timeframe:</b> {timeframe}\n<b>Time:</b> {time_str} (IST)\nPrice dropped below 50 SMA with a RED candle for the first time since Golden Cross."
                         print(msg)
                         send_telegram_alert(msg)
-                    
-                    # Bearish Pullback: Death trend + Red Candle (Close < Open)
-                    elif last_cross_type == 'death' and curr_close < curr_open:
-                        msg = f"🔄 <b>1ST PULLBACK (BEARISH)</b>\n<b>Asset:</b> {symbol}\n<b>Timeframe:</b> {timeframe}\n<b>Time:</b> {time_str} (IST)\nPrice touched 200 SMA and formed a red candle after Death Cross."
+                
+                elif last_cross_type == 'death':
+                    # Current candle is green and closed above 50 SMA
+                    if curr_close > curr_sma50 and curr_close > curr_open:
+                        msg = f"📈 <b>1ST PULLBACK (ABOVE 50 SMA)</b>\n<b>Asset:</b> {symbol}\n<b>Timeframe:</b> {timeframe}\n<b>Time:</b> {time_str} (IST)\nPrice rose above 50 SMA with a GREEN candle for the first time since Death Cross."
                         print(msg)
                         send_telegram_alert(msg)
             
@@ -145,7 +148,7 @@ def check_crossover(symbol, timeframe):
         print(f"Error checking {symbol} on {timeframe}: {e}")
 
 def main():
-    print("Starting Ultra-Precision Scanner with Pullback Engine...")
+    print("Starting Dual-Strategy Scanner (Crossovers + Pullbacks)...")
     print("Bot will calculate exact sleep times to fire 5 seconds after candle close.")
     
     while True:
