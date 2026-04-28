@@ -148,18 +148,27 @@ def check_crossover(symbol, timeframe):
         print(f"Error checking {symbol} on {timeframe}: {e}")
 
 def main():
-    print("Starting 5-Minute Scalping Scanner (Crossovers + Pullbacks)...")
+    print("Starting Swing Trading Scanner (30m & 1h)...")
     print("Bot will calculate exact sleep times to fire 5 seconds after candle close.")
     
     while True:
         now = datetime.datetime.now(datetime.timezone.utc)
-        
-        # Calculate the exact time the NEXT 5-minute candle closes
         current_minute_floor = now.replace(second=0, microsecond=0)
-        minutes_to_next = 5 - (now.minute % 5)
+        
+        # --- OPTIMIZED FOR 30 MINUTE CYCLES ---
+        if now.minute < 30:
+            minutes_to_next = 30 - now.minute
+        else:
+            minutes_to_next = 60 - now.minute
+            
         next_candle_close = current_minute_floor + datetime.timedelta(minutes=minutes_to_next)
         
-        # Add our 5-second delay buffer
+        scan_timeframes = ['30m'] 
+        
+        # If the minute is 00, it means an hour just closed, so we add the 1h timeframe
+        if next_candle_close.minute == 0:
+            scan_timeframes.append('1h')
+            
         target_scan_time = next_candle_close + datetime.timedelta(seconds=5)
         sleep_seconds = (target_scan_time - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
         
@@ -171,12 +180,12 @@ def main():
         
         # --- SERVER WAKES UP EXACTLY 5 SECONDS AFTER CANDLES CLOSE ---
         wake_time_ist = datetime.datetime.now(datetime.timezone.utc).astimezone(IST)
-        print(f"--- [IST: {wake_time_ist.strftime('%I:%M:%S %p')}] Scanning 5m Chart ---")
+        print(f"--- [IST: {wake_time_ist.strftime('%I:%M:%S %p')}] Scanning: {scan_timeframes} ---")
         
         for symbol in SYMBOLS:
-            # Hardcoded strictly to '5m'
-            check_crossover(symbol, '5m')
-            time.sleep(1) # Respect Binance rate limits
+            for tf in scan_timeframes:
+                check_crossover(symbol, tf)
+                time.sleep(1) # Respect Binance rate limits
 
 if __name__ == '__main__':
     main()
