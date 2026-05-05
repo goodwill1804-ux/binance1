@@ -14,7 +14,7 @@ exchange = ccxt.binanceusdm({
     'enableRateLimit': True,
 })
 
-SYMBOLS = ['BTC/USDT', 'XAU/USDT', 'XAG/USDT']
+SYMBOLS = ['BTC/USDT', 'XAU/USDT', 'XAG/USDT','CLUSDT']
 
 # Set Timezone to India
 IST = pytz.timezone('Asia/Kolkata')
@@ -148,23 +148,23 @@ def check_crossover(symbol, timeframe):
         print(f"Error checking {symbol} on {timeframe}: {e}")
 
 def main():
-    print("Starting Swing Trading Scanner (30m & 1h)...")
+    print("Starting Multi-Timeframe Scanner (15m, 30m, 1h)...")
     print("Bot will calculate exact sleep times to fire 5 seconds after candle close.")
     
     while True:
         now = datetime.datetime.now(datetime.timezone.utc)
         current_minute_floor = now.replace(second=0, microsecond=0)
         
-        # --- OPTIMIZED FOR 30 MINUTE CYCLES ---
-        if now.minute < 30:
-            minutes_to_next = 30 - now.minute
-        else:
-            minutes_to_next = 60 - now.minute
-            
+        # --- OPTIMIZED FOR 15 MINUTE CYCLES ---
+        minutes_to_next = 15 - (now.minute % 15)
         next_candle_close = current_minute_floor + datetime.timedelta(minutes=minutes_to_next)
         
-        scan_timeframes = ['30m'] 
+        scan_timeframes = ['15m'] 
         
+        # If the minute is a multiple of 30, it means a 30m candle just closed
+        if next_candle_close.minute % 30 == 0:
+            scan_timeframes.append('30m')
+            
         # If the minute is 00, it means an hour just closed, so we add the 1h timeframe
         if next_candle_close.minute == 0:
             scan_timeframes.append('1h')
