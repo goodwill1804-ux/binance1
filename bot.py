@@ -14,7 +14,9 @@ exchange = ccxt.binanceusdm({
     'enableRateLimit': True,
 })
 
-SYMBOLS = ['BTC/USDT', 'XAU/USDT', 'XAG/USDT','CLUSDT']
+# Note: Added CL/USDT to standard CCXT slash formatting
+SYMBOLS = ['BTC/USDT', 'XAU/USDT', 'XAG/USDT', 'CL/USDT']
+TRADITIONAL_ASSETS = ['XAU/USDT', 'XAG/USDT', 'CL/USDT']
 
 # Set Timezone to India
 IST = pytz.timezone('Asia/Kolkata')
@@ -35,13 +37,37 @@ def send_telegram_alert(message):
 
 def check_crossover(symbol, timeframe):
     try:
-        bars = exchange.fetch_ohlcv(symbol, timeframe, limit=210)
+        # --- LEAD ENGINEER WEEKEND FILTER (LIVE SCAN) ---
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        # Python weekday(): Monday=0, ..., Saturday=5, Sunday=6
+        is_weekend = now_utc.weekday() >= 5 
+        
+        if is_weekend and symbol in TRADITIONAL_ASSETS:
+            return # Skip scanning traditional assets entirely on weekends
+
+        # Fetch 350 candles instead of 210. 
+        # Because we delete weekends, we need a larger buffer to guarantee 200 valid weekday candles.
+        bars = exchange.fetch_ohlcv(symbol, timeframe, limit=350)
         
         if len(bars) < 200:
             return
 
         df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         
+        # --- LEAD ENGINEER WEEKEND FILTER (HISTORICAL DATA) ---
+        if symbol in TRADITIONAL_ASSETS:
+            # Create a temporary datetime series to check the day of the week
+            dt_series = pd.to_datetime(df['timestamp'], unit='ms')
+            # Filter the dataframe to KEEP ONLY Monday (0) through Friday (4)
+            df = df[dt_series.dt.weekday < 5].copy()
+            # Reset index so the math engine processes it as a continuous line
+            df.reset_index(drop=True, inplace=True)
+            
+            # Ensure we still have 200 candles after deleting the weekends
+            if len(df) < 200:
+                return
+        
+        # Calculate Simple Moving Averages on the clean data
         df['sma_50'] = df['close'].rolling(window=50).mean()
         df['sma_200'] = df['close'].rolling(window=200).mean()
         
@@ -55,7 +81,6 @@ def check_crossover(symbol, timeframe):
         else:
             curr_idx = -2
             
-        # Convert dynamic negative indices to positive integers for historical scanning
         curr_pos_idx = len(df) + curr_idx
         prev_pos_idx = curr_pos_idx - 1
             
@@ -64,7 +89,6 @@ def check_crossover(symbol, timeframe):
         curr_50 = df['sma_50'].iloc[curr_pos_idx]
         curr_200 = df['sma_200'].iloc[curr_pos_idx]
         
-        # Get current IST time
         now_ist = datetime.datetime.now(datetime.timezone.utc).astimezone(IST)
         time_str = now_ist.strftime('%I:%M %p')
         
@@ -88,7 +112,6 @@ def check_crossover(symbol, timeframe):
         last_cross_type = None
         last_cross_idx = None
 
-        # Step A: Look backwards to find the established trend (Golden or Death)
         for i in range(prev_pos_idx, 0, -1):
             p_50 = df['sma_50'].iloc[i-1]
             p_200 = df['sma_200'].iloc[i-1]
@@ -105,7 +128,6 @@ def check_crossover(symbol, timeframe):
                 break
 
         if last_cross_type is not None:
-            # Step B: Check if the 50 SMA pullback condition has ALREADY happened since the crossover
             pullback_happened_before = False
             
             for i in range(last_cross_idx + 1, curr_pos_idx):
@@ -114,31 +136,26 @@ def check_crossover(symbol, timeframe):
                 i_sma_50 = df['sma_50'].iloc[i]
                 
                 if last_cross_type == 'golden':
-                    # Check for previous red candle below 50 SMA
                     if i_close < i_sma_50 and i_close < i_open:
                         pullback_happened_before = True
                         break
                 elif last_cross_type == 'death':
-                    # Check for previous green candle above 50 SMA
                     if i_close > i_sma_50 and i_close > i_open:
                         pullback_happened_before = True
                         break
             
-            # Step C: If it hasn't happened before, check the CURRENT closed candle
             if not pullback_happened_before:
                 curr_open = df['open'].iloc[curr_pos_idx]
                 curr_close = df['close'].iloc[curr_pos_idx]
                 curr_sma50 = df['sma_50'].iloc[curr_pos_idx]
 
                 if last_cross_type == 'golden':
-                    # Current candle is red and closed below 50 SMA
                     if curr_close < curr_sma50 and curr_close < curr_open:
                         msg = f"📉 <b>1ST PULLBACK (BELOW 50 SMA)</b>\n<b>Asset:</b> {symbol}\n<b>Timeframe:</b> {timeframe}\n<b>Time:</b> {time_str} (IST)\nPrice dropped below 50 SMA with a RED candle for the first time since Golden Cross."
                         print(msg)
                         send_telegram_alert(msg)
                 
                 elif last_cross_type == 'death':
-                    # Current candle is green and closed above 50 SMA
                     if curr_close > curr_sma50 and curr_close > curr_open:
                         msg = f"📈 <b>1ST PULLBACK (ABOVE 50 SMA)</b>\n<b>Asset:</b> {symbol}\n<b>Timeframe:</b> {timeframe}\n<b>Time:</b> {time_str} (IST)\nPrice rose above 50 SMA with a GREEN candle for the first time since Death Cross."
                         print(msg)
@@ -149,23 +166,20 @@ def check_crossover(symbol, timeframe):
 
 def main():
     print("Starting Multi-Timeframe Scanner (15m, 30m, 1h)...")
-    print("Bot will calculate exact sleep times to fire 5 seconds after candle close.")
+    print("Weekend data dynamically filtered for Traditional Assets.")
     
     while True:
         now = datetime.datetime.now(datetime.timezone.utc)
         current_minute_floor = now.replace(second=0, microsecond=0)
         
-        # --- OPTIMIZED FOR 15 MINUTE CYCLES ---
         minutes_to_next = 15 - (now.minute % 15)
         next_candle_close = current_minute_floor + datetime.timedelta(minutes=minutes_to_next)
         
         scan_timeframes = ['15m'] 
         
-        # If the minute is a multiple of 30, it means a 30m candle just closed
         if next_candle_close.minute % 30 == 0:
             scan_timeframes.append('30m')
             
-        # If the minute is 00, it means an hour just closed, so we add the 1h timeframe
         if next_candle_close.minute == 0:
             scan_timeframes.append('1h')
             
@@ -178,14 +192,13 @@ def main():
             print(f"Server sleeping for {sleep_seconds:.1f} seconds...")
             time.sleep(sleep_seconds)
         
-        # --- SERVER WAKES UP EXACTLY 5 SECONDS AFTER CANDLES CLOSE ---
         wake_time_ist = datetime.datetime.now(datetime.timezone.utc).astimezone(IST)
         print(f"--- [IST: {wake_time_ist.strftime('%I:%M:%S %p')}] Scanning: {scan_timeframes} ---")
         
         for symbol in SYMBOLS:
             for tf in scan_timeframes:
                 check_crossover(symbol, tf)
-                time.sleep(1) # Respect Binance rate limits
+                time.sleep(1) 
 
 if __name__ == '__main__':
     main()
