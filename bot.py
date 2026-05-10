@@ -14,7 +14,6 @@ exchange = ccxt.binanceusdm({
     'enableRateLimit': True,
 })
 
-# Note: Added CL/USDT to standard CCXT slash formatting
 SYMBOLS = ['BTC/USDT', 'XAU/USDT', 'XAG/USDT', 'CL/USDT']
 TRADITIONAL_ASSETS = ['XAU/USDT', 'XAG/USDT', 'CL/USDT']
 
@@ -39,14 +38,11 @@ def check_crossover(symbol, timeframe):
     try:
         # --- LEAD ENGINEER WEEKEND FILTER (LIVE SCAN) ---
         now_utc = datetime.datetime.now(datetime.timezone.utc)
-        # Python weekday(): Monday=0, ..., Saturday=5, Sunday=6
         is_weekend = now_utc.weekday() >= 5 
         
         if is_weekend and symbol in TRADITIONAL_ASSETS:
-            return # Skip scanning traditional assets entirely on weekends
+            return 
 
-        # Fetch 350 candles instead of 210. 
-        # Because we delete weekends, we need a larger buffer to guarantee 200 valid weekday candles.
         bars = exchange.fetch_ohlcv(symbol, timeframe, limit=350)
         
         if len(bars) < 200:
@@ -56,20 +52,22 @@ def check_crossover(symbol, timeframe):
         
         # --- LEAD ENGINEER WEEKEND FILTER (HISTORICAL DATA) ---
         if symbol in TRADITIONAL_ASSETS:
-            # Create a temporary datetime series to check the day of the week
             dt_series = pd.to_datetime(df['timestamp'], unit='ms')
-            # Filter the dataframe to KEEP ONLY Monday (0) through Friday (4)
             df = df[dt_series.dt.weekday < 5].copy()
-            # Reset index so the math engine processes it as a continuous line
             df.reset_index(drop=True, inplace=True)
             
-            # Ensure we still have 200 candles after deleting the weekends
             if len(df) < 200:
                 return
         
-        # Calculate Simple Moving Averages on the clean data
+        # Calculate Simple Moving Averages
         df['sma_50'] = df['close'].rolling(window=50).mean()
         df['sma_200'] = df['close'].rolling(window=200).mean()
+        
+        # Calculate Bollinger Bands (20 period, 2 standard deviations)
+        df['bb_mid'] = df['close'].rolling(window=20).mean()
+        df['bb_std'] = df['close'].rolling(window=20).std()
+        df['bb_upper'] = df['bb_mid'] + (df['bb_std'] * 2)
+        df['bb_lower'] = df['bb_mid'] - (df['bb_std'] * 2)
         
         # --- DYNAMIC INDEXING ---
         tf_ms = exchange.parse_timeframe(timeframe) * 1000
@@ -107,7 +105,7 @@ def check_crossover(symbol, timeframe):
 
 
         # ==========================================
-        # STRATEGY 2: 50 SMA PULLBACK ALERTS
+        # STRATEGY 2: BOLLINGER BAND PULLBACK ALERTS
         # ==========================================
         last_cross_type = None
         last_cross_idx = None
@@ -133,31 +131,39 @@ def check_crossover(symbol, timeframe):
             for i in range(last_cross_idx + 1, curr_pos_idx):
                 i_open = df['open'].iloc[i]
                 i_close = df['close'].iloc[i]
-                i_sma_50 = df['sma_50'].iloc[i]
+                i_high = df['high'].iloc[i]
+                i_low = df['low'].iloc[i]
+                i_bb_upper = df['bb_upper'].iloc[i]
+                i_bb_lower = df['bb_lower'].iloc[i]
                 
                 if last_cross_type == 'golden':
-                    if i_close < i_sma_50 and i_close < i_open:
+                    # Check for previous touch of Lower BB + Green Candle
+                    if i_low <= i_bb_lower and i_close > i_open:
                         pullback_happened_before = True
                         break
                 elif last_cross_type == 'death':
-                    if i_close > i_sma_50 and i_close > i_open:
+                    # Check for previous touch of Upper BB + Red Candle
+                    if i_high >= i_bb_upper and i_close < i_open:
                         pullback_happened_before = True
                         break
             
             if not pullback_happened_before:
                 curr_open = df['open'].iloc[curr_pos_idx]
                 curr_close = df['close'].iloc[curr_pos_idx]
-                curr_sma50 = df['sma_50'].iloc[curr_pos_idx]
+                curr_high = df['high'].iloc[curr_pos_idx]
+                curr_low = df['low'].iloc[curr_pos_idx]
+                curr_bb_upper = df['bb_upper'].iloc[curr_pos_idx]
+                curr_bb_lower = df['bb_lower'].iloc[curr_pos_idx]
 
                 if last_cross_type == 'golden':
-                    if curr_close < curr_sma50 and curr_close < curr_open:
-                        msg = f"📉 <b>1ST PULLBACK (BELOW 50 SMA)</b>\n<b>Asset:</b> {symbol}\n<b>Timeframe:</b> {timeframe}\n<b>Time:</b> {time_str} (IST)\nPrice dropped below 50 SMA with a RED candle for the first time since Golden Cross."
+                    if curr_low <= curr_bb_lower and curr_close > curr_open:
+                        msg = f"📉 <b>1ST PULLBACK (LOWER BOLLINGER)</b>\n<b>Asset:</b> {symbol}\n<b>Timeframe:</b> {timeframe}\n<b>Time:</b> {time_str} (IST)\nPrice touched the Lower Bollinger Band and formed a GREEN candle after a Golden Cross."
                         print(msg)
                         send_telegram_alert(msg)
                 
                 elif last_cross_type == 'death':
-                    if curr_close > curr_sma50 and curr_close > curr_open:
-                        msg = f"📈 <b>1ST PULLBACK (ABOVE 50 SMA)</b>\n<b>Asset:</b> {symbol}\n<b>Timeframe:</b> {timeframe}\n<b>Time:</b> {time_str} (IST)\nPrice rose above 50 SMA with a GREEN candle for the first time since Death Cross."
+                    if curr_high >= curr_bb_upper and curr_close < curr_open:
+                        msg = f"📈 <b>1ST PULLBACK (UPPER BOLLINGER)</b>\n<b>Asset:</b> {symbol}\n<b>Timeframe:</b> {timeframe}\n<b>Time:</b> {time_str} (IST)\nPrice touched the Upper Bollinger Band and formed a RED candle after a Death Cross."
                         print(msg)
                         send_telegram_alert(msg)
             
@@ -167,6 +173,7 @@ def check_crossover(symbol, timeframe):
 def main():
     print("Starting Multi-Timeframe Scanner (15m, 30m, 1h)...")
     print("Weekend data dynamically filtered for Traditional Assets.")
+    print("Bollinger Band Pullback Engine Active.")
     
     while True:
         now = datetime.datetime.now(datetime.timezone.utc)
